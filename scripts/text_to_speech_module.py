@@ -37,12 +37,21 @@ class SpeechRecognizerConfig:
 
 
 class VoskSpeechRecognizer:
-    """Accepts sound from a WAV file or microphone and returns recognized text."""
+    """Speech-to-text layer.
+
+    This class owns only audio input and Vosk recognition:
+    - accepts either a WAV file or microphone stream;
+    - converts recognized speech to plain text;
+    - removes an optional wake trigger such as "робот".
+
+    The class does not call the LLM and does not generate audio output.
+    """
 
     def __init__(self, config: SpeechRecognizerConfig) -> None:
         self.config = config
 
     def transcribe_wav(self, wav_path: str) -> str:
+        """Recognize speech from a mono 16-bit PCM WAV file."""
         self._ensure_vosk_model()
         import vosk
 
@@ -65,6 +74,7 @@ class VoskSpeechRecognizer:
         return self._strip_trigger(" ".join(parts).strip())
 
     def listen_for_text(self) -> str:
+        """Record a short microphone window and recognize it with Vosk."""
         self._ensure_vosk_model()
         import sounddevice as sd
         import vosk
@@ -99,6 +109,7 @@ class VoskSpeechRecognizer:
         return self._strip_trigger(" ".join(recognized).strip())
 
     def normalize_text(self, text: str) -> str:
+        """Apply the same trigger cleanup to direct text input."""
         return self._strip_trigger(text.strip())
 
     def _ensure_vosk_model(self) -> None:
@@ -137,12 +148,21 @@ class TextAnalyzerConfig:
 
 
 class OllamaTextAnalyzer:
-    """Sends recognized speech text to Ollama and returns the assistant answer."""
+    """Text analysis layer.
+
+    This class receives recognized text from VoskSpeechRecognizer and sends it
+    to Ollama. It returns a short natural-language answer that can be passed to
+    the speech synthesizer.
+
+    Robot control side effects should not be placed here until there is a clear
+    command contract with the motion/ROS layer.
+    """
 
     def __init__(self, config: TextAnalyzerConfig) -> None:
         self.config = config
 
     def analyze(self, text: str) -> str:
+        """Send user text to Ollama and return the response text."""
         if not text:
             return "Я не расслышал команду."
 
@@ -182,12 +202,21 @@ class SpeechSynthesizerConfig:
 
 
 class SpeechSynthesizer:
-    """Converts answer text to speech and optionally plays it."""
+    """Text-to-speech layer.
+
+    This class receives the answer from OllamaTextAnalyzer and turns it into a
+    WAV file. CosyVoice is the preferred backend; if it cannot run in the current
+    environment, the class falls back to a local system TTS backend.
+
+    The class returns the path to the generated audio file so other robot code
+    can reuse it or publish it later.
+    """
 
     def __init__(self, config: SpeechSynthesizerConfig) -> None:
         self.config = config
 
     def speak(self, text: str) -> str:
+        """Generate answer audio, optionally play it, and return the WAV path."""
         output_path = self.config.output_path or self._default_output_path()
         try:
             self._synthesize_with_cosyvoice(text, output_path)
@@ -200,6 +229,7 @@ class SpeechSynthesizer:
         return output_path
 
     def _synthesize_with_cosyvoice(self, text: str, output_path: str) -> None:
+        """Use the local CosyVoice installation as the primary TTS backend."""
         if not self.config.cosyvoice_root.exists():
             raise FileNotFoundError(f"CosyVoice root not found: {self.config.cosyvoice_root}")
         if not self.config.cosyvoice_model.exists():
@@ -232,6 +262,7 @@ class SpeechSynthesizer:
         raise RuntimeError("CosyVoice returned no audio.")
 
     def _synthesize_with_system_tts(self, text: str, output_path: str) -> None:
+        """Fallback backend for machines without a ready CosyVoice runtime."""
         espeak = shutil.which("espeak") or shutil.which("espeak-ng")
         if espeak:
             subprocess.run([espeak, "-v", "ru", "-w", output_path, text], check=True)
