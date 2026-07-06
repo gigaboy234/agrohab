@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ from typing import Any
 from urllib import error, request
 
 
-DEFAULT_COSYVOICE_ROOT = Path("/home/darknight/CosyVoice")
+DEFAULT_COSYVOICE_ROOT = Path(os.getenv("COSYVOICE_ROOT", Path.home() / "CosyVoice"))
 DEFAULT_COSYVOICE_MODEL = DEFAULT_COSYVOICE_ROOT / "pretrained_models" / "Fun-CosyVoice3-0.5B"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
@@ -33,7 +34,7 @@ class SpeechRecognizerConfig:
     sample_rate: int = 16000
     device: int | None = None
     trigger: str = ""
-    listen_seconds: float = 8.0
+    listen_seconds: float = 4.0
 
 
 class VoskSpeechRecognizer:
@@ -93,17 +94,25 @@ class VoskSpeechRecognizer:
         recognized: list[str] = []
         target_chunks = max(1, int(self.config.listen_seconds * self.config.sample_rate / 4000))
 
-        with sd.RawInputStream(
-            samplerate=self.config.sample_rate,
-            blocksize=4000,
-            dtype="int16",
-            channels=1,
-            callback=callback,
-            device=self.config.device,
-        ):
-            for _ in range(target_chunks):
-                if recognizer.AcceptWaveform(audio_queue.get()):
-                    recognized.append(self._extract_text(recognizer.Result()))
+        try:
+            with sd.RawInputStream(
+                samplerate=self.config.sample_rate,
+                blocksize=4000,
+                dtype="int16",
+                channels=1,
+                callback=callback,
+                device=self.config.device,
+            ):
+                for _ in range(target_chunks):
+                    try:
+                        chunk = audio_queue.get(timeout=self.config.listen_seconds + 2.0)
+                    except queue.Empty:
+                        print("Microphone timeout, stopping capture.", file=sys.stderr)
+                        break
+                    if recognizer.AcceptWaveform(chunk):
+                        recognized.append(self._extract_text(recognizer.Result()))
+        except Exception as exc:
+            raise RuntimeError(f"Microphone access failed: {exc}") from exc
 
         recognized.append(self._extract_text(recognizer.FinalResult()))
         return self._strip_trigger(" ".join(recognized).strip())
@@ -182,9 +191,14 @@ class OllamaTextAnalyzer:
 
         try:
             with request.urlopen(http_request, timeout=self.config.timeout_sec) as response:
-                result = json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
         except error.URLError as exc:
             raise RuntimeError(f"Ollama request failed: {exc}") from exc
+
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Ollama returned invalid JSON: {exc}") from exc
 
         answer = str(result.get("response", "")).strip()
         return answer or "Я получил пустой ответ от языковой модели."
@@ -239,8 +253,12 @@ class SpeechSynthesizer:
         if not Path(self.config.prompt_wav).exists():
             raise FileNotFoundError(f"Prompt WAV not found: {self.config.prompt_wav}")
 
-        sys.path.insert(0, str(self.config.cosyvoice_root))
-        sys.path.insert(0, str(self.config.cosyvoice_root / "third_party" / "Matcha-TTS"))
+        cosyvoice_root_str = str(self.config.cosyvoice_root)
+        matcha_str = str(self.config.cosyvoice_root / "third_party" / "Matcha-TTS")
+        if cosyvoice_root_str not in sys.path:
+            sys.path.insert(0, cosyvoice_root_str)
+        if matcha_str not in sys.path:
+            sys.path.insert(0, matcha_str)
 
         import torchaudio
         from cosyvoice.cli.cosyvoice import AutoModel
@@ -265,7 +283,9 @@ class SpeechSynthesizer:
         """Запасной backend для машин без готового окружения CosyVoice."""
         espeak = shutil.which("espeak") or shutil.which("espeak-ng")
         if espeak:
-            subprocess.run([espeak, "-v", "ru", "-w", output_path, text], check=True)
+            result = subprocess.run([espeak, "-v", "ru", "-w", output_path, text], capture_output=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"espeak failed: {result.stderr.decode()}")
             return
 
         pyttsx3 = self._load_pyttsx3()
@@ -292,7 +312,7 @@ class SpeechSynthesizer:
             if player:
                 subprocess.run([player, path], check=False)
                 return
-        print(f"Audio saved to {path}; no audio player found.", file=sys.stderr)
+        print(f"WARNING: No audio player found (tried aplay, paplay, play). Audio saved to {path}", file=sys.stderr)
 
     @staticmethod
     def _default_output_path() -> str:
@@ -306,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trigger", default=os.getenv("VOICE_TRIGGER", ""), help="Optional wake phrase to strip.")
     parser.add_argument("--vosk-model", default=os.getenv("VOSK_MODEL_PATH", ""), help="Path to Vosk model.")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Microphone sample rate for Vosk.")
-    parser.add_argument("--listen-seconds", type=float, default=8.0, help="Microphone listening window.")
+    parser.add_argument("--listen-seconds", type=float, default=4.0, help="Microphone listening window.")
     parser.add_argument("--device", type=int, default=None, help="sounddevice input device index.")
     parser.add_argument("--ollama-model", default=os.getenv("OLLAMA_MODEL", "llama3.1"))
     parser.add_argument("--ollama-url", default=os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_URL))
@@ -322,7 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    F = VoskSpeechRecognizer(
+    def _shutdown(signum: int, frame: Any) -> None:
+        print(f"\nReceived signal {signum}, shutting down.", file=sys.stderr)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    recognizer = VoskSpeechRecognizer(
         SpeechRecognizerConfig(
             vosk_model_path=args.vosk_model,
             sample_rate=args.sample_rate,
@@ -331,8 +358,8 @@ def main() -> int:
             listen_seconds=args.listen_seconds,
         )
     )
-    S = OllamaTextAnalyzer(TextAnalyzerConfig(model=args.ollama_model, url=args.ollama_url))
-    D = SpeechSynthesizer(
+    analyzer = OllamaTextAnalyzer(TextAnalyzerConfig(model=args.ollama_model, url=args.ollama_url))
+    synthesizer = SpeechSynthesizer(
         SpeechSynthesizerConfig(
             cosyvoice_root=args.cosyvoice_root,
             cosyvoice_model=args.cosyvoice_model,
@@ -343,17 +370,33 @@ def main() -> int:
         )
     )
 
-    if args.text:
-        user_text = F.normalize_text(args.text)
-    elif args.wav:
-        user_text = F.transcribe_wav(args.wav)
-    else:
-        user_text = F.listen_for_text()
+    try:
+        if args.text:
+            user_text = recognizer.normalize_text(args.text)
+        elif args.wav:
+            user_text = recognizer.transcribe_wav(args.wav)
+        else:
+            user_text = recognizer.listen_for_text()
+    except Exception as exc:
+        print(f"Speech recognition failed: {exc}", file=sys.stderr)
+        return 1
 
     print(f"Recognized: {user_text}")
-    answer = S.analyze(user_text)
+
+    try:
+        answer = analyzer.analyze(user_text)
+    except Exception as exc:
+        print(f"Text analysis failed: {exc}", file=sys.stderr)
+        return 1
+
     print(f"Answer: {answer}")
-    output_path = D.speak(answer)
+
+    try:
+        output_path = synthesizer.speak(answer)
+    except Exception as exc:
+        print(f"Speech synthesis failed: {exc}", file=sys.stderr)
+        return 1
+
     print(f"Audio: {output_path}")
     return 0
 
