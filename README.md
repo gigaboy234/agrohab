@@ -104,6 +104,24 @@ python3 scripts/text_to_speech_module.py \
   --ollama-model llama3.1
 ```
 
-По умолчанию TTS пробует использовать локальный `/home/darknight/CosyVoice`
-и модель `Fun-CosyVoice3-0.5B`. Для CosyVoice3 нужен `prompt.wav`; если он не
-передан, модуль попробует системный TTS через `espeak`/`pyttsx3`.
+По умолчанию TTS пробует использовать локальный CosyVoice из `$COSYVOICE_ROOT`
+(или `~/CosyVoice`, если переменная не задана) и модель `Fun-CosyVoice3-0.5B`.
+Для CosyVoice3 нужен `prompt.wav`; если он не передан, модуль попробует
+системный TTS через `espeak`/`pyttsx3`.
+
+### Параметры окружения
+
+| Переменная | Описание | Дефолт |
+|------------|----------|--------|
+| `COSYVOICE_ROOT` | Путь к установке CosyVoice | `~/CosyVoice` |
+| `COSYVOICE_PROMPT_WAV` | WAV-файл с референсным голосом | — |
+| `COSYVOICE_PROMPT_TEXT` | Текст референсного голоса | `"Привет, я голосовой модуль робота."` |
+| `VOSK_MODEL_PATH` | Путь к модели Vosk | — |
+| `VOICE_TRIGGER` | Фраза-триггер для активации | — |
+| `OLLAMA_MODEL` | Модель Ollama | `llama3.1` |
+| `OLLAMA_URL` | URL API Ollama | `http://127.0.0.1:11434/api/generate` |
+
+## История изменений
+
+- **2025-07-06** — Исправлен TTS-модуль: убран хардкод путей, добавлена обработка ошибок микрофона, graceful shutdown по SIGINT/SIGTERM, таймаут на чтение аудио, нормальные имена переменных, exit codes.
+- **2025-07-06** — Добавлен `.gitignore` для Python-проекта.
