@@ -1,0 +1,7 @@
+Unitree SDK2 Python: https://github.com/unitreerobotics/unitree_sdk2_python
+Unitree SDK2 C++: https://github.com/unitreerobotics/unitree_sdk2
+G1 SDK Development Guide: https://support.unitree.com/home/en/G1_developer
+RealSense ROS: https://github.com/realsenseai/realsense-ros
+Ultralytics Predict: https://docs.ultralytics.com/modes/predict/
+ROS 2 Foxy topics: https://docs.ros.org/en/foxy/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Topics/Understanding-ROS2-Topics.html
+ROS 2 Foxy services: https://docs.ros.org/en/foxy/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Services/Understanding-ROS2-Services.html
