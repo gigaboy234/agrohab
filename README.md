@@ -61,3 +61,49 @@ cd ~/g1_cup_solution_package
 - `ss -lunp | grep 15000` показывает python receiver.
 - В receiver есть `GetFsmId after: (0, 801)`.
 - В движении видны `UDP recv vx=0.300` или `UDP recv wz=...` и `SDK Move sent ...`.
+
+## Голосовой модуль
+
+Отдельный модуль голосового цикла находится в:
+
+```bash
+scripts/text_to_speech_module.py
+```
+
+Архитектура модуля:
+
+```text
+VoskSpeechRecognizer -> OllamaTextAnalyzer -> SpeechSynthesizer
+```
+
+Проверка текстового входа без микрофона:
+
+```bash
+python3 scripts/text_to_speech_module.py \
+  --text "объясни статус робота" \
+  --ollama-model llama3.1 \
+  --no-play
+```
+
+Проверка распознавания из WAV-файла:
+
+```bash
+VOSK_MODEL_PATH=/path/to/vosk-model-small-ru \
+python3 scripts/text_to_speech_module.py \
+  --wav /path/to/input.wav \
+  --ollama-model llama3.1
+```
+
+Запуск с микрофоном:
+
+```bash
+VOSK_MODEL_PATH=/path/to/vosk-model-small-ru \
+COSYVOICE_PROMPT_WAV=/path/to/prompt.wav \
+python3 scripts/text_to_speech_module.py \
+  --trigger "робот" \
+  --ollama-model llama3.1
+```
+
+По умолчанию TTS пробует использовать локальный `/home/darknight/CosyVoice`
+и модель `Fun-CosyVoice3-0.5B`. Для CosyVoice3 нужен `prompt.wav`; если он не
+передан, модуль попробует системный TTS через `espeak`/`pyttsx3`.
